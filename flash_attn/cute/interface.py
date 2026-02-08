@@ -778,10 +778,6 @@ def _flash_attn_fwd(
             options="--enable-tvm-ffi",
         )
 
-    # In "fake mode", we will take torch fake tensors as input and the expected behaviors are:
-    # - Use those fake metadata to populate compilation cache
-    # - Return "fake" output tensors, which could be needed in follow-up fake operations
-    # Thus, we skip the actual kernel invocation here.
     if not is_fake_mode():
         _flash_attn_fwd.compile_cache[compile_key](
             q.detach(),
@@ -798,7 +794,16 @@ def _flash_attn_fwd(
             window_size_left,
             window_size_right,
             learnable_sink,
-            normalized_block_sparse_tensors[:4] if normalized_block_sparse_tensors is not None else None,
+            (
+                normalized_block_sparse_tensors.mask_block_cnt,
+                normalized_block_sparse_tensors.mask_block_idx,
+                normalized_block_sparse_tensors.full_block_cnt,
+                normalized_block_sparse_tensors.full_block_idx,
+                normalized_block_sparse_tensors.dq_write_order,
+                normalized_block_sparse_tensors.dq_write_order_full,
+            )
+            if normalized_block_sparse_tensors is not None
+            else None,
             aux_tensors,
         )
     if is_split_kv:
@@ -1060,6 +1065,7 @@ def _flash_attn_bwd(
             score_mod is not None
             or score_mod_bwd is not None
             or mask_mod is not None
+            or block_sparse_tensors is not None
         )
         cluster_size = 2 if head_dim >= 128 and not disable_2cta else 1
         use_2cta_instrs = cluster_size==2
@@ -1293,6 +1299,30 @@ def _flash_attn_bwd(
             block_size=(m_block_size, n_block_size),
             subtile_factor=subtile_factor,
         )
+        if deterministic:
+            if normalized_block_sparse_tensors.dq_write_order is None:
+                raise ValueError(
+                    "deterministic block-sparse backward requires dq_write_order in block_sparse_tensors"
+                )
+            if (
+                normalized_block_sparse_tensors.full_block_cnt is not None
+                and normalized_block_sparse_tensors.dq_write_order_full is None
+            ):
+                raise ValueError(
+                    "deterministic block-sparse backward requires dq_write_order_full when full blocks are present"
+                )
+            if normalized_block_sparse_tensors.spt is None:
+                raise ValueError(
+                    "deterministic block-sparse backward requires block_sparse_tensors.spt "
+                    "to match dq_write_order direction"
+                )
+    if (
+        normalized_block_sparse_tensors is not None
+        and normalized_block_sparse_tensors.spt is not None
+    ):
+        spt = normalized_block_sparse_tensors.spt and deterministic
+    else:
+        spt = (causal or local) and deterministic
 
     if arch // 10 in [8, 9, 12]:
         compile_key = (
@@ -1353,6 +1383,7 @@ def _flash_attn_bwd(
             cluster_size,
             use_2cta_instrs,
             deterministic,
+            spt,
             score_mod_hash,
             score_mod_bwd_hash,
             mask_mod_hash,
@@ -1451,6 +1482,7 @@ def _flash_attn_bwd(
                 cluster_size=cluster_size,
                 use_2cta_instrs=use_2cta_instrs,
                 deterministic=deterministic,
+                spt=spt,
                 score_mod=score_mod,
                 score_mod_bwd=score_mod_bwd,
                 mask_mod=mask_mod,
@@ -1514,7 +1546,16 @@ def _flash_attn_bwd(
             dK_semaphore,
             dV_semaphore,
             aux_tensors,
-            normalized_block_sparse_tensors[:4] if normalized_block_sparse_tensors is not None else None,
+            (
+                normalized_block_sparse_tensors.mask_block_cnt,
+                normalized_block_sparse_tensors.mask_block_idx,
+                normalized_block_sparse_tensors.full_block_cnt,
+                normalized_block_sparse_tensors.full_block_idx,
+                normalized_block_sparse_tensors.dq_write_order,
+                normalized_block_sparse_tensors.dq_write_order_full,
+            )
+            if normalized_block_sparse_tensors is not None
+            else None,
         )
 
     if arch // 10 == 9:

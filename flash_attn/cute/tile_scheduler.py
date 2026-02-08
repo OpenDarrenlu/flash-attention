@@ -528,7 +528,9 @@ class SingleTileVarlenScheduler:
         ) -> "SingleTileVarlenScheduler.Params":
             size_l2 = 50 * 1024 * 1024  # 50 MB for K & V
             # if backward, this is qdo block size
-            kv_block_size = (args.headdim + args.headdim_v) * args.element_size * args.tile_shape_mn[1]
+            kv_block_size = (
+                (args.headdim + args.headdim_v) * args.element_size * args.tile_shape_mn[1]
+            )
             # if backward, add dqaccum block size to calculate swizzle
             if args.head_swizzle:
                 kv_block_size += args.headdim * 4 * args.tile_shape_mn[1]
